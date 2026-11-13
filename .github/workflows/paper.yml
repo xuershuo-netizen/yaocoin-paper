@@ -1,6 +1,10 @@
 name: Paper trading and Pages
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/paper.yml'
   schedule:
     - cron: '4-59/5 * * * *'
 concurrency:
