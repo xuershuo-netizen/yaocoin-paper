@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-status-url="./status.json">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>妖币末日狙击系统 · 模拟盘</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#101619;color:#ebf2f3}
+body{max-width:980px;margin:5vh auto;padding:0 20px}
+h1{margin-bottom:4px;font-size:clamp(26px,5vw,42px)}
+p,th{color:#9eacb2} strong{color:#8ddfbe} .warning{color:#ffd090}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:24px 0}
+.card,section{background:#192226;border:1px solid #2d3b42;border-radius:12px;padding:16px}
+.card small{display:block;color:#9eacb2;margin-bottom:8px}
+.card span{font-size:1.5rem;font-variant-numeric:tabular-nums}
+section{margin:12px 0;overflow-x:auto} h2{font-size:1rem;margin-top:0}
+table{width:100%;border-collapse:collapse;white-space:nowrap}
+th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #2d3b42}
+pre{margin-bottom:0;white-space:pre-wrap;font:inherit}
+</style>
+<body>
+<header><h1>妖币末日狙击系统</h1><p><strong>模拟盘</strong> · <span id="symbol">正在连接</span> · 15 分钟 K 线</p></header>
+<p id="feed" role="status">正在读取账本…</p>
+<p id="scan"></p>
+<div class="cards">
+  <div class="card"><small>模拟权益</small><span id="equity">—</span></div>
+  <div class="card"><small>可用资金</small><span id="cash">—</span></div>
+  <div class="card"><small>固定杠杆</small><span id="leverage">10×</span></div>
+  <div class="card"><small>当前资金费率</small><span id="funding">—</span></div>
+</div>
+<section><h2>持仓与挂单</h2><pre id="position">—</pre></section>
+<section><h2>每日净结算（悉尼时间）</h2><pre id="daily">—</pre></section>
+<section><h2>模拟流水</h2><table>
+<thead><tr><th>时间</th><th>合约</th><th>事件</th><th>价格</th><th>数量</th><th>金额（U）</th></tr></thead>
+<tbody id="events"></tbody></table></section>
+<script>
+const el = id => document.getElementById(id);
+const n = (value, places=2) => value == null ? "—" : Number(value).toLocaleString(
+  "zh-CN", {maximumFractionDigits:places, minimumFractionDigits:places});
+const local = value => new Date(value).toLocaleString("zh-CN", {hour12:false});
+const labels = {short_signal:"做空信号",short_fill:"限价成交",entry_expired:"挂单过期",
+  entry_cancelled:"取消入场",stop:"止损",tp1:"第一止盈",tp2:"第二止盈",
+  liquidation:"模拟强平",funding:"资金费结算"};
+const reasons = {missed_next_bar:"错过下一根 K 线",no_trade_through:"未穿过限价",
+  open_outside_risk_levels:"开盘价超出风控区间",insufficient_collateral:"可用保证金不足",
+  stop_beyond_model_liquidation:"止损超出模拟强平线"};
+async function refresh() {
+  try {
+    const endpoint = document.documentElement.dataset.statusUrl || "/api/status";
+    const response = await fetch(endpoint, {cache:"no-store",signal:AbortSignal.timeout(8000)});
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const s = await response.json();
+    el("symbol").textContent = s.symbol === "AUTO" ? "USDT 永续全市场" : s.symbol;
+    const scan = s.scan;
+    el("scan").textContent = scan ? "上次扫描 · " + local(scan.time) + " · 全市场 " + scan.universe +
+      " 个 · 费率达标 " + scan.funding_candidates + " 个 · K 线检查 " + scan.checked +
+      " 个 · 信号 " + (scan.signals.join("、") || "无") : "";
+    const days = Object.entries(s.daily_net).sort(([a], [b]) => b.localeCompare(a)).slice(0,14);
+    el("daily").textContent = days.length ? days.map(([day, net]) => day + "  " +
+      (net > 0 ? "+" : "") + n(net) + " U").join("\n") : "暂无模拟结算";
+    el("equity").textContent = n(s.equity) + " U";
+    el("cash").textContent = n(s.cash) + " U";
+    el("leverage").textContent = s.leverage + "×";
+    el("funding").textContent = s.market ? n(s.market.rate * 100, 4) + "%" : "—";
+    const stale = s.last_success && Date.now() - s.last_success > (s.snapshot_mode ? 1200000 : 120000);
+    el("feed").className = s.error || stale ? "warning" : "";
+    el("feed").textContent = s.error ? "行情暂停 · " + s.error :
+      stale ? "行情更新超时 · " + local(s.last_success) :
+      s.last_success ? "行情已更新 · " + local(s.last_success) : "等待首次行情";
+    const p = s.position;
+    el("position").textContent = p ?
+      "空头 · 逐仓 " + n(p.margin) + " U · 数量 " + n(p.qty,4) +
+      "\n开仓 " + n(p.entry,8) + " · 止损 " + n(p.stop,8) + " · 第二目标 " + n(p.target,8) +
+      (p.tp1_pending ? "\n第一止盈将在下一根开盘模拟成交" : p.partial ? "\n已平一半，止损移到开仓价" : "") :
+      s.pending ? "下一根 K 线模拟挂空单 · 止损 " + n(s.pending.stop,8) :
+      "空仓 · 等待六项条件同时满足";
+    const rows = s.events.slice(-30).reverse().map(event => {
+      const tr = document.createElement("tr");
+      const label = labels[event.kind] || event.kind;
+      for (const value of [local(event.timestamp),event.symbol || (s.symbol === "AUTO" ? "—" : s.symbol),
+        event.reason ? label + " · " + (reasons[event.reason] || event.reason) : label,
+        n(event.price,8),n(event.qty,4),n(event.amount ?? event.pnl_after_close_fee)]) {
+        const td = document.createElement("td"); td.textContent = value; tr.append(td);
+      }
+      return tr;
+    });
+    if (!rows.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6; cell.textContent = "暂无模拟成交或信号"; row.append(cell); rows.push(row);
+    }
+    el("events").replaceChildren(...rows);
+  } catch (error) {
+    el("feed").className = "warning";
+    el("feed").textContent = "暂时无法读取账本";
+  } finally {
+    setTimeout(refresh, document.documentElement.dataset.statusUrl ? 60000 : 5000);
+  }
+}
+refresh();
+</script>
+</body>
+</html>
